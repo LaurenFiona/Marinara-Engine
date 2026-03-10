@@ -25,6 +25,7 @@ import {
   X,
   Plus,
   MessageCircle,
+  Swords,
 } from "lucide-react";
 import { cn } from "../../lib/utils";
 import { api } from "../../lib/api-client";
@@ -204,26 +205,27 @@ export function RoleplayHUD({ chatId, characterCount, layout = "top" }: Roleplay
           <TemperatureWidget value={temperature ?? ""} onSave={(v) => patchField("temperature", v)} />
         </>
       )}
-      {enabledAgentTypes.has("persona-stats") && (
-        <PersonaStatsWidget bars={personaStatBars} onUpdate={(bars) => patchField("personaStats", bars)} layout={layout} />
-      )}
-      {enabledAgentTypes.has("character-tracker") && (
-        <CharactersWidget
-          characters={presentCharacters}
+      {/* Combined player widget — merges Persona, Characters, Inventory, Quests into one button */}
+      {(enabledAgentTypes.has("persona-stats") || enabledAgentTypes.has("character-tracker") || enabledAgentTypes.has("quest")) && (
+        <CombinedPlayerWidget
           layout={layout}
-          onUpdate={(chars) => {
+          showPersona={enabledAgentTypes.has("persona-stats")}
+          showCharacters={enabledAgentTypes.has("character-tracker")}
+          showQuests={enabledAgentTypes.has("quest")}
+          personaStats={personaStatBars}
+          onUpdatePersonaStats={(bars) => patchField("personaStats", bars)}
+          characters={presentCharacters}
+          onUpdateCharacters={(chars) => {
             if (gameState) {
               setGameState({ ...gameState, presentCharacters: chars });
             }
             api.patch(`/chats/${chatId}/game-state`, { presentCharacters: chars }).catch(() => {});
           }}
+          inventory={inventory}
+          onUpdateInventory={(items) => patchPlayerStats("inventory", items)}
+          quests={activeQuests}
+          onUpdateQuests={(q) => patchPlayerStats("activeQuests", q)}
         />
-      )}
-      {enabledAgentTypes.has("persona-stats") && (
-        <InventoryWidget items={inventory} onUpdate={(items) => patchPlayerStats("inventory", items)} layout={layout} />
-      )}
-      {enabledAgentTypes.has("quest") && (
-        <QuestsWidget quests={activeQuests} onUpdate={(q) => patchPlayerStats("activeQuests", q)} layout={layout} />
       )}
     </div>
   );
@@ -370,6 +372,315 @@ function EchoChamberToggle() {
         </span>
       )}
     </button>
+  );
+}
+
+// ═══════════════════════════════════════════════
+// Combined Player Widget — merges Persona, Chars,
+// Inventory, and Quests into a single expandable panel
+// ═══════════════════════════════════════════════
+
+function CombinedPlayerWidget({
+  layout = "top",
+  showPersona,
+  showCharacters,
+  showQuests,
+  personaStats,
+  onUpdatePersonaStats,
+  characters,
+  onUpdateCharacters,
+  inventory,
+  onUpdateInventory,
+  quests,
+  onUpdateQuests,
+}: {
+  layout?: HudPosition;
+  showPersona: boolean;
+  showCharacters: boolean;
+  showQuests: boolean;
+  personaStats: CharacterStat[];
+  onUpdatePersonaStats: (bars: CharacterStat[]) => void;
+  characters: PresentCharacter[];
+  onUpdateCharacters: (chars: PresentCharacter[]) => void;
+  inventory: InventoryItem[];
+  onUpdateInventory: (items: InventoryItem[]) => void;
+  quests: QuestProgress[];
+  onUpdateQuests: (quests: QuestProgress[]) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const buttonRef = useRef<HTMLButtonElement>(null);
+
+  // --- Persona Stats helpers ---
+  const updateBar = (idx: number, field: "value" | "max" | "name", val: number | string) => {
+    const next = [...personaStats];
+    next[idx] = { ...next[idx]!, [field]: val };
+    onUpdatePersonaStats(next);
+  };
+
+  // --- Characters helpers ---
+  const addCharacter = () => {
+    onUpdateCharacters([
+      ...characters,
+      {
+        characterId: `manual-${Date.now()}`,
+        name: "New Character",
+        emoji: "👤",
+        mood: "",
+        appearance: null,
+        outfit: null,
+        customFields: {},
+        stats: [],
+        thoughts: null,
+      },
+    ]);
+  };
+  const removeCharacter = (idx: number) => onUpdateCharacters(characters.filter((_, i) => i !== idx));
+  const updateCharacter = (idx: number, updated: PresentCharacter) => {
+    const next = [...characters];
+    next[idx] = updated;
+    onUpdateCharacters(next);
+  };
+
+  // --- Inventory helpers ---
+  const addItem = () => {
+    onUpdateInventory([...inventory, { name: "New Item", description: "", quantity: 1, location: "on_person" }]);
+  };
+  const removeItem = (idx: number) => onUpdateInventory(inventory.filter((_, i) => i !== idx));
+  const updateItem = (idx: number, updated: InventoryItem) => {
+    const next = [...inventory];
+    next[idx] = updated;
+    onUpdateInventory(next);
+  };
+
+  // --- Quests helpers ---
+  const addQuest = () => {
+    onUpdateQuests([
+      ...quests,
+      {
+        questEntryId: `manual-${Date.now()}`,
+        name: "New Quest",
+        currentStage: 0,
+        objectives: [{ text: "Objective 1", completed: false }],
+        completed: false,
+      },
+    ]);
+  };
+  const removeQuest = (idx: number) => onUpdateQuests(quests.filter((_, i) => i !== idx));
+  const updateQuest = (idx: number, updated: QuestProgress) => {
+    const next = [...quests];
+    next[idx] = updated;
+    onUpdateQuests(next);
+  };
+
+  // Count total tracked items for badge
+  const totalItems = characters.length + inventory.length + quests.length + (personaStats.length > 0 ? 1 : 0);
+
+  return (
+    <div className="relative">
+      <button
+        ref={buttonRef}
+        onClick={() => setOpen(!open)}
+        className={cn(WIDGET, "border-purple-500/20 text-purple-300")}
+        title="Player & Tracker"
+      >
+        <div className="flex h-7 max-md:h-4 items-center justify-center shrink-0">
+          <Swords size={14} className="text-purple-400/60 max-md:h-3 max-md:w-3" />
+        </div>
+        <span className="max-w-full truncate text-[9px] max-md:text-[7px] font-semibold leading-tight shrink-0">
+          Tracker
+        </span>
+      </button>
+
+      <WidgetPopover
+        open={open}
+        onClose={() => setOpen(false)}
+        anchorRef={buttonRef}
+        placement={layout === "left" ? "right" : layout === "right" ? "left" : "bottom"}
+        className="w-80 max-h-[min(75vh,32rem)]"
+      >
+        <div className="flex items-center justify-between border-b border-white/5 px-3 py-1.5">
+          <span className="text-[10px] font-semibold text-white/50 uppercase tracking-wider flex items-center gap-1">
+            <Swords size={10} /> Player Tracker
+          </span>
+          <button onClick={() => setOpen(false)} className="text-white/30 hover:text-white/60 transition-colors">
+            <X size={12} />
+          </button>
+        </div>
+        <div className="overflow-y-auto max-h-[min(calc(75vh-2rem),30rem)] divide-y divide-white/5">
+          {/* ── Persona Stats section ── */}
+          {showPersona && (
+            <div className="p-2">
+              <div className="px-1 pb-1">
+                <span className="text-[10px] font-semibold text-violet-300/70 uppercase tracking-wider">Persona Stats</span>
+              </div>
+              <div className="space-y-2">
+                {personaStats.length === 0 && (
+                  <div className="text-[10px] text-white/30 text-center py-1">No stats tracked</div>
+                )}
+                {personaStats.map((bar, idx) => (
+                  <StatBarEditable
+                    key={bar.name}
+                    stat={bar}
+                    onUpdateName={(n) => updateBar(idx, "name", n)}
+                    onUpdateValue={(v) => updateBar(idx, "value", v)}
+                    onUpdateMax={(v) => updateBar(idx, "max", v)}
+                  />
+                ))}
+              </div>
+            </div>
+          )}
+
+          {/* ── Characters section ── */}
+          {showCharacters && (
+            <div className="p-2">
+              <div className="flex items-center justify-between px-1 pb-1">
+                <span className="text-[10px] font-semibold text-purple-300/70 uppercase tracking-wider flex items-center gap-1">
+                  <Users size={9} /> Characters ({characters.length})
+                </span>
+                <button
+                  onClick={addCharacter}
+                  className="flex items-center gap-0.5 text-[10px] text-purple-400 hover:text-purple-300 transition-colors"
+                >
+                  <Plus size={10} /> Add
+                </button>
+              </div>
+              <div className="space-y-2">
+                {characters.length === 0 && (
+                  <div className="text-[10px] text-white/30 text-center py-1">No characters in scene</div>
+                )}
+                {characters.map((char, idx) => (
+                  <div key={char.characterId ?? idx} className="rounded-lg bg-white/5 p-2 space-y-1">
+                    <div className="flex items-center gap-1.5">
+                      <InlineEdit
+                        value={char.emoji || "👤"}
+                        onSave={(v) => updateCharacter(idx, { ...char, emoji: v })}
+                        className="w-8 text-center !text-sm"
+                      />
+                      <InlineEdit
+                        value={char.name}
+                        onSave={(v) => updateCharacter(idx, { ...char, name: v })}
+                        className="flex-1 !font-medium"
+                        placeholder="Name"
+                      />
+                      <button
+                        onClick={() => removeCharacter(idx)}
+                        className="text-white/20 hover:text-red-400 transition-colors shrink-0"
+                        title="Remove character"
+                      >
+                        <X size={10} />
+                      </button>
+                    </div>
+                    <div className="grid grid-cols-2 gap-x-2 gap-y-0.5 pl-1">
+                      <LabeledEdit label="Mood" value={char.mood} onSave={(v) => updateCharacter(idx, { ...char, mood: v })} />
+                      <LabeledEdit label="Look" value={char.appearance ?? ""} onSave={(v) => updateCharacter(idx, { ...char, appearance: v || null })} />
+                      <LabeledEdit label="Outfit" value={char.outfit ?? ""} onSave={(v) => updateCharacter(idx, { ...char, outfit: v || null })} />
+                      <LabeledEdit label="Thinks" value={char.thoughts ?? ""} onSave={(v) => updateCharacter(idx, { ...char, thoughts: v || null })} />
+                    </div>
+                    {char.stats.length > 0 && (
+                      <div className="space-y-1 pt-1 border-t border-white/5">
+                        {char.stats.map((stat, si) => (
+                          <StatBarEditable
+                            key={stat.name}
+                            stat={stat}
+                            onUpdateValue={(v) => {
+                              const next = [...char.stats];
+                              next[si] = { ...next[si]!, value: v };
+                              updateCharacter(idx, { ...char, stats: next });
+                            }}
+                            onUpdateMax={(v) => {
+                              const next = [...char.stats];
+                              next[si] = { ...next[si]!, max: v };
+                              updateCharacter(idx, { ...char, stats: next });
+                            }}
+                          />
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {/* ── Inventory section ── */}
+          {showPersona && (
+            <div className="p-2">
+              <div className="flex items-center justify-between px-1 pb-1">
+                <span className="text-[10px] font-semibold text-amber-300/70 uppercase tracking-wider flex items-center gap-1">
+                  <Package size={9} /> Inventory ({inventory.length})
+                </span>
+                <button
+                  onClick={addItem}
+                  className="flex items-center gap-0.5 text-[10px] text-amber-400 hover:text-amber-300 transition-colors"
+                >
+                  <Plus size={10} /> Add
+                </button>
+              </div>
+              <div className="space-y-1">
+                {inventory.length === 0 && (
+                  <div className="text-[10px] text-white/30 text-center py-1">Inventory empty</div>
+                )}
+                {inventory.map((item, idx) => (
+                  <div key={idx} className="flex items-center gap-1.5 rounded-lg bg-white/5 px-2 py-1.5">
+                    <Package size={10} className="shrink-0 text-amber-400/60" />
+                    <InlineEdit
+                      value={item.name}
+                      onSave={(v) => updateItem(idx, { ...item, name: v })}
+                      className="flex-1"
+                      placeholder="Item name"
+                    />
+                    <input
+                      type="number"
+                      value={item.quantity}
+                      onChange={(e) => updateItem(idx, { ...item, quantity: Math.max(0, Number(e.target.value)) })}
+                      className="w-8 bg-transparent text-center text-[9px] text-white/40 outline-none [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none"
+                      title="Quantity"
+                    />
+                    <button
+                      onClick={() => removeItem(idx)}
+                      className="text-white/20 hover:text-red-400 transition-colors shrink-0"
+                      title="Remove item"
+                    >
+                      <X size={9} />
+                    </button>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {/* ── Quests section ── */}
+          {showQuests && (
+            <div className="p-2">
+              <div className="flex items-center justify-between px-1 pb-1">
+                <span className="text-[10px] font-semibold text-emerald-300/70 uppercase tracking-wider flex items-center gap-1">
+                  <Scroll size={9} /> Quests ({quests.length})
+                </span>
+                <button
+                  onClick={addQuest}
+                  className="flex items-center gap-0.5 text-[10px] text-emerald-400 hover:text-emerald-300 transition-colors"
+                >
+                  <Plus size={10} /> Add
+                </button>
+              </div>
+              <div className="space-y-2">
+                {quests.length === 0 && (
+                  <div className="text-[10px] text-white/30 text-center py-1">No active quests</div>
+                )}
+                {quests.map((quest, idx) => (
+                  <QuestCardEditable
+                    key={quest.questEntryId || idx}
+                    quest={quest}
+                    onUpdate={(q) => updateQuest(idx, q)}
+                    onRemove={() => removeQuest(idx)}
+                  />
+                ))}
+              </div>
+            </div>
+          )}
+        </div>
+      </WidgetPopover>
+    </div>
   );
 }
 
