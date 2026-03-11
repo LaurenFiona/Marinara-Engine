@@ -94,7 +94,9 @@ if [ ! -d "packages/server/dist" ]; then
 fi
 if [ ! -d "packages/client/dist" ]; then
     echo "  [..] Building client..."
-    pnpm build:client
+    # Skip tsc type-check on Termux — it OOMs on low-memory devices.
+    # Vite doesn't need tsc output (tsconfig has noEmit: true).
+    pnpm --filter @marinara-engine/client exec vite build
 fi
 
 # ── Database schema ──
