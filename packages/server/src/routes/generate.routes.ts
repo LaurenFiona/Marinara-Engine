@@ -600,6 +600,15 @@ export async function generateRoutes(app: FastifyInstance) {
         signal: abortController.signal,
       };
 
+      // Populate writable lorebook IDs for the lorebook-keeper agent
+      if (resolvedAgents.some((a) => a.type === "lorebook-keeper")) {
+        const enabledBooks = await lorebooksStore.list();
+        const enabledIds = enabledBooks
+          .filter((b: any) => b.enabled === true || b.enabled === "true")
+          .map((b: any) => b.id);
+        agentContext.writableLorebookIds = enabledIds;
+      }
+
       // If the expression agent is enabled, load available sprite expressions per character
       if (resolvedAgents.some((a) => a.type === "expression")) {
         try {
@@ -1742,6 +1751,64 @@ export async function generateRoutes(app: FastifyInstance) {
             }
           }
 
+          // Lorebook Keeper agent → persist new/updated entries to the database
+          if (result.success && result.type === "lorebook_update" && result.data && typeof result.data === "object") {
+            try {
+              const lkData = result.data as Record<string, unknown>;
+              const updates = (lkData.updates as any[]) ?? [];
+              if (updates.length > 0) {
+                // Find a target lorebook: prefer first enabled lorebook, or auto-create one for this chat
+                let targetLorebookId: string | null = null;
+                if (agentContext.writableLorebookIds && agentContext.writableLorebookIds.length > 0) {
+                  targetLorebookId = agentContext.writableLorebookIds[0] ?? null;
+                } else {
+                  const created = await lorebooksStore.create({
+                    name: `Auto-generated (${chat.name || input.chatId})`,
+                    description: "Automatically created by the Lorebook Keeper agent",
+                    category: "uncategorized",
+                    chatId: input.chatId,
+                    enabled: true,
+                    generatedBy: "agent",
+                    sourceAgentId: "lorebook-keeper",
+                  });
+                  if (created) targetLorebookId = (created as any).id;
+                }
+
+                if (targetLorebookId) {
+                  // Load existing entries for update matching by name
+                  const existingEntries = await lorebooksStore.listEntries(targetLorebookId);
+                  const entryByName = new Map(existingEntries.map((e: any) => [e.name?.toLowerCase(), e]));
+
+                  for (const u of updates) {
+                    const name = (u.entryName as string) ?? "";
+                    const content = (u.content as string) ?? "";
+                    const keys = (u.keys as string[]) ?? [];
+                    const tag = (u.tag as string) ?? "";
+                    const action = (u.action as string) ?? "create";
+
+                    const existing = entryByName.get(name.toLowerCase());
+
+                    if (action === "update" && existing) {
+                      await lorebooksStore.updateEntry(existing.id, { content, keys, tag });
+                    } else {
+                      // Create new entry (or create if "update" target not found)
+                      await lorebooksStore.createEntry({
+                        lorebookId: targetLorebookId,
+                        name,
+                        content,
+                        keys,
+                        tag,
+                        enabled: true,
+                      });
+                    }
+                  }
+                }
+              }
+            } catch {
+              // Non-critical
+            }
+          }
+
           // Chat Summary agent → persist rolling summary to chat metadata
           if (result.success && result.type === "chat_summary" && result.data && typeof result.data === "object") {
             try {
@@ -1921,6 +1988,15 @@ export async function generateRoutes(app: FastifyInstance) {
         memory: {},
       };
 
+      // Populate writable lorebook IDs for lorebook-keeper retries
+      {
+        const enabledBooks = await lorebooksStore.list();
+        const enabledIds = enabledBooks
+          .filter((b: any) => b.enabled === true || b.enabled === "true")
+          .map((b: any) => b.id);
+        agentContext.writableLorebookIds = enabledIds;
+      }
+
       // Load game state
       const latestGS = await gameStateStore.getLatestCommitted(chatId);
       if (latestGS) {
@@ -2076,6 +2152,56 @@ export async function generateRoutes(app: FastifyInstance) {
               };
             }
             reply.raw.write(`data: ${JSON.stringify({ type: "game_state_patch", data: patchData })}\n\n`);
+          } catch {
+            /* Non-critical */
+          }
+        }
+        // Lorebook Keeper agent → persist entries on retry
+        if (result.success && result.type === "lorebook_update" && result.data && typeof result.data === "object") {
+          try {
+            const lkData = result.data as Record<string, unknown>;
+            const retryUpdates = (lkData.updates as any[]) ?? [];
+            if (retryUpdates.length > 0) {
+              let targetLorebookId: string | null = null;
+              if (agentContext.writableLorebookIds && agentContext.writableLorebookIds.length > 0) {
+                targetLorebookId = agentContext.writableLorebookIds[0] ?? null;
+              } else {
+                const created = await lorebooksStore.create({
+                  name: `Auto-generated (${(chat as any).name || chatId})`,
+                  description: "Automatically created by the Lorebook Keeper agent",
+                  category: "uncategorized",
+                  chatId: chatId ?? null,
+                  enabled: true,
+                  generatedBy: "agent",
+                  sourceAgentId: "lorebook-keeper",
+                });
+                if (created) targetLorebookId = (created as any).id;
+              }
+              if (targetLorebookId) {
+                const existingEntries = await lorebooksStore.listEntries(targetLorebookId);
+                const entryByName = new Map(existingEntries.map((e: any) => [e.name?.toLowerCase(), e]));
+                for (const u of retryUpdates) {
+                  const name = (u.entryName as string) ?? "";
+                  const content = (u.content as string) ?? "";
+                  const keys = (u.keys as string[]) ?? [];
+                  const tag = (u.tag as string) ?? "";
+                  const action = (u.action as string) ?? "create";
+                  const existing = entryByName.get(name.toLowerCase());
+                  if (action === "update" && existing) {
+                    await lorebooksStore.updateEntry(existing.id, { content, keys, tag });
+                  } else {
+                    await lorebooksStore.createEntry({
+                      lorebookId: targetLorebookId,
+                      name,
+                      content,
+                      keys,
+                      tag,
+                      enabled: true,
+                    });
+                  }
+                }
+              }
+            }
           } catch {
             /* Non-critical */
           }
