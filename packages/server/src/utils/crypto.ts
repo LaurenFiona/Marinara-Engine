@@ -2,31 +2,52 @@
 // Utility: API Key Encryption
 // ──────────────────────────────────────────────
 import { createCipheriv, createDecipheriv, randomBytes } from "node:crypto";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
+import { DATA_DIR } from "./data-dir.js";
 
 const ALGORITHM = "aes-256-gcm";
 
-let warnedAboutDefaultKey = false;
+let cachedKey: Buffer | null = null;
 
+/**
+ * Resolve the encryption key with the following priority:
+ *  1. ENCRYPTION_KEY env var  (explicit override)
+ *  2. Auto-generated key persisted in <DATA_DIR>/.encryption-key
+ *
+ * If no key exists anywhere, one is generated and saved automatically
+ * so updates never break existing installs.
+ */
 function getEncryptionKey(): Buffer {
-  const key = process.env.ENCRYPTION_KEY;
-  if (!key) {
-    if (process.env.NODE_ENV === "production") {
-      throw new Error(
-        "ENCRYPTION_KEY environment variable is required in production. " +
-          "Generate one with: node -e \"console.log(require('crypto').randomBytes(32).toString('hex'))\"",
-      );
-    }
-    if (!warnedAboutDefaultKey) {
-      warnedAboutDefaultKey = true;
-      console.warn(
-        "[SECURITY WARNING] No ENCRYPTION_KEY set — using insecure default key. " +
-          "API keys stored in the database can be decrypted by anyone with access to the source code. " +
-          "Set ENCRYPTION_KEY in your .env file for production use.",
-      );
-    }
-    return Buffer.alloc(32, "dev-key-do-not-use-in-production!");
+  if (cachedKey) return cachedKey;
+
+  // 1. Env var takes priority
+  const envKey = process.env.ENCRYPTION_KEY;
+  if (envKey) {
+    cachedKey = Buffer.from(envKey, "hex");
+    return cachedKey;
   }
-  return Buffer.from(key, "hex");
+
+  // 2. Check for persisted key in data dir
+  const keyPath = join(DATA_DIR, ".encryption-key");
+  if (existsSync(keyPath)) {
+    const stored = readFileSync(keyPath, "utf-8").trim();
+    if (stored) {
+      cachedKey = Buffer.from(stored, "hex");
+      return cachedKey;
+    }
+  }
+
+  // 3. Auto-generate and persist a new key
+  const newKey = randomBytes(32);
+  mkdirSync(DATA_DIR, { recursive: true });
+  writeFileSync(keyPath, newKey.toString("hex") + "\n", { mode: 0o600 });
+  console.log(
+    "[CRYPTO] No ENCRYPTION_KEY found — generated and saved to",
+    keyPath,
+  );
+  cachedKey = newKey;
+  return cachedKey;
 }
 
 /** Encrypt a plaintext API key. Returns "iv:encrypted:authTag" in hex. */

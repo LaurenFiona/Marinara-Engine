@@ -112,3 +112,9 @@ start "" cmd /c "timeout /t 4 /nobreak >nul && start %PROTOCOL%://localhost:%POR
 :: Start server
 cd packages\server
 node dist/index.js
+if errorlevel 1 (
+    echo.
+    echo  [ERROR] Server exited unexpectedly. See the error above.
+    echo.
+    pause
+)
